@@ -21,7 +21,7 @@ namespace _Project.Blacksmithing.Foundry
         // Internals (2D physics)
         private Rigidbody2D _rb2D;
         private bool _hadRigidbody2D;
-        private bool _wasKinematic2D;
+        private RigidbodyType2D _wasBodyType;
         private float _wasGravityScale;
 
         // Drag math
@@ -29,10 +29,9 @@ namespace _Project.Blacksmithing.Foundry
         private float _initialZ;
         private Vector3 _grabOffset;
 
-        
         private SpriteRenderer _sr;
         private Color _baseColor;
-        
+
         private void Awake()
         {
             _rb2D = GetComponent<Rigidbody2D>();
@@ -41,13 +40,13 @@ namespace _Project.Blacksmithing.Foundry
             if (DragCamera == null)
                 DragCamera = Camera.main;
 
-            // NEW: set initial color from the metal registry
+            // Color from metal registry
             _sr = GetComponent<SpriteRenderer>();
             var metal = MetalsUtil.FromId(MetalId);
             _baseColor = (metal != null) ? metal.BaseColor : Color.white;
             if (_sr != null) _sr.color = _baseColor;
         }
-        
+
         public Color GetBaseColor() => _baseColor;
 
         public void OnBeginDrag(PointerEventData eventData)
@@ -56,9 +55,12 @@ namespace _Project.Blacksmithing.Foundry
 
             if (_hadRigidbody2D)
             {
-                _wasKinematic2D = _rb2D.isKinematic;
+                // Store previous physics state
+                _wasBodyType    = _rb2D.bodyType;
                 _wasGravityScale = _rb2D.gravityScale;
-                _rb2D.isKinematic = true;
+
+                // Switch to kinematic for drag
+                _rb2D.bodyType = RigidbodyType2D.Kinematic;
                 _rb2D.gravityScale = 0f;
                 _rb2D.linearVelocity = Vector2.zero;
                 _rb2D.angularVelocity = 0f;
@@ -92,15 +94,15 @@ namespace _Project.Blacksmithing.Foundry
                 if (ok)
                 {
                     // Crucible took ownership (parented, positioned, AddedToCrucible=true).
-                    // Just return; don't resume physics.
+                    // Do not restore physics; we're now owned by the crucible.
                     return;
                 }
             }
 
-            // Otherwise, resume physics if not committed.
+            // Otherwise, restore physics if not committed.
             if (_hadRigidbody2D)
             {
-                _rb2D.isKinematic = _wasKinematic2D;
+                _rb2D.bodyType = _wasBodyType;
                 _rb2D.gravityScale = _wasGravityScale;
             }
         }
@@ -114,5 +116,4 @@ namespace _Project.Blacksmithing.Foundry
             return DragCamera.ScreenToWorldPoint(sp);
         }
     }
-    
 }

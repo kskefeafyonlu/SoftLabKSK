@@ -4409,7 +4409,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::_Project.Blacksmithing.Foundry.OreMB
   MetalId: 0
-  Liters: 1
+  Liters: 0.5
   DragCamera: {fileID: 0}
   LockZ: 1
   AddedToCrucible: 0
@@ -4718,6 +4718,9 @@ MonoBehaviour:
   bandAlpha: 0.9
   updateInterval: 0.08
   surfaceLerp: 0.35
+  useFixedVisualHeight: 0
+  fixedVisualHeight: 1.5
+  minBandHeight: 0.01
   useParentSpriteMask: 0
   surfaceBubbles: {fileID: 0}
   enableBubblesWhenHot: 0
