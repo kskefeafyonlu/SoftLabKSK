@@ -198,8 +198,8 @@ MonoBehaviour:
     y: 0
     width: 356
     height: 583
-  m_MinSize: {x: 201, y: 226}
-  m_MaxSize: {x: 4001, y: 4026}
+  m_MinSize: {x: 200, y: 200}
+  m_MaxSize: {x: 4000, y: 4000}
   m_ActualView: {fileID: 6}
   m_Panes:
   - {fileID: 6}
@@ -244,9 +244,9 @@ MonoBehaviour:
   m_SceneHierarchy:
     m_TreeViewState:
       scrollPos: {x: 0, y: 0}
-      m_SelectedIDs: 
-      m_LastClickedID: 0
-      m_ExpandedIDs: eaf1ffff82f4ffff52f5ffff28f6ffff04fbffff
+      m_SelectedIDs: fcd6ffff
+      m_LastClickedID: -10500
+      m_ExpandedIDs: 50d7ffff50e0ffff04fbffff12b600004cb60000
       m_RenameOverlay:
         m_UserAcceptedRename: 0
         m_Name: 
@@ -792,9 +792,9 @@ MonoBehaviour:
   m_AudioPlay: 0
   m_DebugDrawModesUseInteractiveLightBakingData: 0
   m_Position:
-    m_Target: {x: 288.51773, y: 150.88902, z: -1.6534331}
+    m_Target: {x: 260.29028, y: 140.01924, z: -0.5876092}
     speed: 2
-    m_Value: {x: 288.51773, y: 150.88902, z: -1.6534331}
+    m_Value: {x: 260.01782, y: 140.32375, z: -0.6159763}
   m_RenderMode: 0
   m_CameraMode:
     drawMode: 0
@@ -844,9 +844,9 @@ MonoBehaviour:
     speed: 2
     m_Value: {x: 0, y: 0, z: 0, w: 1}
   m_Size:
-    m_Target: 175.3443
+    m_Target: 60.20113
     speed: 2
-    m_Value: 175.3443
+    m_Value: 63.03783
   m_Ortho:
     m_Target: 1
     speed: 2
@@ -981,7 +981,7 @@ MonoBehaviour:
     m_SkipHidden: 0
     m_SearchArea: 1
     m_Folders:
-    - Assets/_Project/Quests
+    - Assets/_Project/Blacksmithing/Foundry
     m_Globs: []
     m_ProductIds: 
     m_AnyWithAssetOrigin: 0
@@ -991,16 +991,16 @@ MonoBehaviour:
   m_ViewMode: 1
   m_StartGridSize: 16
   m_LastFolders:
-  - Assets/_Project/Quests
+  - Assets/_Project/Blacksmithing/Foundry
   m_LastFoldersGridSize: 16
   m_LastProjectPath: C:\LabKSK
   m_LockTracker:
     m_IsLocked: 0
   m_FolderTreeState:
     scrollPos: {x: 0, y: 0}
-    m_SelectedIDs: 08b70000
-    m_LastClickedID: 46856
-    m_ExpandedIDs: 00000000c0b50000f8b6000000b7000000ca9a3b
+    m_SelectedIDs: 02b80000
+    m_LastClickedID: 47106
+    m_ExpandedIDs: 00000000bab60000bcb60000beb60000c0b60000c2b60000c4b60000c6b6000000ca9a3b
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -1029,7 +1029,7 @@ MonoBehaviour:
     scrollPos: {x: 0, y: 0}
     m_SelectedIDs: 
     m_LastClickedID: 0
-    m_ExpandedIDs: 00000000c0b50000
+    m_ExpandedIDs: 00000000bab60000bcb60000beb60000c0b60000c2b60000c4b60000c6b60000
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -1055,10 +1055,10 @@ MonoBehaviour:
       m_Icon: {fileID: 0}
       m_ResourceFile: 
   m_ListAreaState:
-    m_SelectedInstanceIDs: 
-    m_LastClickedInstanceID: 0
+    m_SelectedInstanceIDs: fcd6ffff
+    m_LastClickedInstanceID: -10500
     m_HadKeyboardFocusLastEvent: 1
-    m_ExpandedInstanceIDs: c623000076b20000bc020000bee3000010b3000064c100007ab30000
+    m_ExpandedInstanceIDs: c623000076b20000bc020000bee3000010b3000064c100007ab300001ec30000
     m_CreateAssetUtility:
       m_EndAction: {fileID: 0}
       m_InstanceID: 0
@@ -1189,8 +1189,8 @@ MonoBehaviour:
     y: 0
     width: 531
     height: 941
-  m_MinSize: {x: 276, y: 76}
-  m_MaxSize: {x: 4001, y: 4026}
+  m_MinSize: {x: 275, y: 50}
+  m_MaxSize: {x: 4000, y: 4000}
   m_ActualView: {fileID: 16}
   m_Panes:
   - {fileID: 16}
