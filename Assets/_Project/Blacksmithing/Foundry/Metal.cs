@@ -2,35 +2,44 @@ using UnityEngine;
 
 namespace _Project.Blacksmithing.Foundry
 {
-    
-        [System.Serializable]
-        public class Metal
+    [System.Serializable]
+    public class Metal
+    {
+        public string Name;
+        public MetalStats Stats;
+        public int MeltingPointC;
+        public int BurnPointC;
+
+        // Visual (kept as-is)
+        public Color BaseColor;
+
+        // Time to fully melt (at/above MeltingPointC)
+        public float MeltTimeSeconds;
+
+        // NEW: how quickly this metal heats up in the crucible (relative multiplier; 1.0 = normal)
+        public float HeatSensitivity;
+
+        public Metal(
+            string name,
+            MetalStats stats,
+            int melt,
+            int burn,
+            float meltTimeSeconds,
+            Color baseColor,
+            float heatSensitivity // NEW
+        )
         {
-            public string Name;
-            public MetalStats Stats;
-            public int MeltingPointC;
-            public int BurnPointC;
-
-            // NEW: default visual color for this metal
-            public Color BaseColor;
-
-            // (Already added earlier)
-            public float MeltTimeSeconds;
-
-            public Metal(string name, MetalStats stats, int melt, int burn, float meltTimeSeconds, Color baseColor)
-            {
-                Name = name;
-                Stats = stats;
-                MeltingPointC = melt;
-                BurnPointC = burn;
-                MeltTimeSeconds = meltTimeSeconds;
-                BaseColor = baseColor;              // NEW
-            }
+            Name = name;
+            Stats = stats;
+            MeltingPointC = melt;
+            BurnPointC = burn;
+            MeltTimeSeconds = meltTimeSeconds;
+            BaseColor = baseColor;
+            HeatSensitivity = heatSensitivity;
         }
-    
+    }
 
-
-public static class Metals
+    public static class Metals
     {
         public static readonly Metal Iron = new Metal(
             "Iron",
@@ -38,7 +47,8 @@ public static class Metals
             melt: 600,
             burn: 900,
             meltTimeSeconds: 4.0f,
-            baseColor: new Color32(120, 120, 130, 255)  // cool gray
+            baseColor: new Color32(120, 120, 130, 255),   // cool gray
+            heatSensitivity: 1.00f
         );
 
         public static readonly Metal Copper = new Metal(
@@ -47,7 +57,8 @@ public static class Metals
             melt: 500,
             burn: 800,
             meltTimeSeconds: 3.0f,
-            baseColor: new Color32(184, 115, 51, 255)   // copper
+            baseColor: new Color32(184, 115, 51, 255),    // copper
+            heatSensitivity: 1.20f
         );
 
         public static readonly Metal Silver = new Metal(
@@ -56,7 +67,8 @@ public static class Metals
             melt: 500,
             burn: 850,
             meltTimeSeconds: 3.0f,
-            baseColor: new Color32(200, 200, 210, 255)  // light silver
+            baseColor: new Color32(200, 200, 210, 255),   // light silver
+            heatSensitivity: 1.10f
         );
 
         public static readonly Metal Mithril = new Metal(
@@ -65,7 +77,8 @@ public static class Metals
             melt: 700,
             burn: 950,
             meltTimeSeconds: 5.0f,
-            baseColor: new Color32(140, 200, 230, 255)  // pale blue-silver
+            baseColor: new Color32(140, 200, 230, 255),   // pale blue-silver
+            heatSensitivity: 0.80f
         );
 
         public static readonly Metal Adamantite = new Metal(
@@ -74,7 +87,8 @@ public static class Metals
             melt: 800,
             burn: 1000,
             meltTimeSeconds: 6.0f,
-            baseColor: new Color32(60, 50, 80, 255)     // dark violet-gray
+            baseColor: new Color32(60, 50, 80, 255),      // dark violet-gray
+            heatSensitivity: 0.70f
         );
 
         public static readonly Metal Gold = new Metal(
@@ -83,10 +97,11 @@ public static class Metals
             melt: 500,
             burn: 850,
             meltTimeSeconds: 3.0f,
-            baseColor: new Color32(212, 175, 55, 255)   // gold
+            baseColor: new Color32(212, 175, 55, 255),    // gold
+            heatSensitivity: 1.00f
         );
     }
-    
+
     public enum MetalId
     {
         Iron,
@@ -99,7 +114,6 @@ public static class Metals
 
     public static class MetalsUtil
     {
-        // Map enum → hardcoded Metal from your Metals registry
         public static Metal FromId(MetalId id)
         {
             switch (id)

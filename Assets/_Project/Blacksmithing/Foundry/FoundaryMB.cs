@@ -10,44 +10,38 @@ namespace _Project.Blacksmithing.Foundry
         // ---- Capacity ----
         public int CapacityLiters = 5;
 
-        // ---- Contents (solid items, some may become IsMelted) ----
+        // ---- Contents (solid items; some will become IsMelted) ----
         public List<CrucibleEntry> Contents = new List<CrucibleEntry>();
 
         // ---- Furnace Temperature (°C) ----
+        public int AmbientTempC = 20;   // used for new entries
         public int MinTempC = 200;
         public int MaxTempC = 1000;
         public int CurrentTempC = 200;
 
-        // ---- Smelt Timing ----
-        public float RequiredHoldSeconds = 8f;   // reserved for your later “hold” phase
-        public float HoldTimer = 0f;             // reserved; not used in this step
+        // ---- Heating Model ----
+        [Tooltip("Baseline heat transfer factor (per second). Higher heats ores faster.")]
+        public float HeatRateBase = 0.25f;
 
-        // Global melt speed scale (1 = normal; <1 faster; >1 slower)
+        // ---- Melt Timing Scale ----
+        [Tooltip("Global melt time scale (1=normal).")]
         public float GlobalMeltTimeScale = 1f;
 
         // ---- Loop State Flags ----
-        public bool IsHeating = false;   // becomes true once anything is inside
-        public bool IsSmelting = false;  // reserved; not used yet
+        public bool IsHeating = false;
+        public bool IsSmelting = false; // reserved
 
-        // ---- Stability & Impurities ----
+        // ---- Stability & Impurities (future) ----
         public float StabilityMax = 100f;
-        public float Stability = 100f;   // collapse → Scrap (logic later)
-        public float Impurities = 0f;    // 0..100 (logic later)
+        public float Stability = 100f;
+        public float Impurities = 0f;
         public float ImpuritiesMax = 100f;
 
-        // ---- AUTO-PLACEMENT (bottom grid in local space) ----
-        [Header("Auto Placement (local space)")]
-        public Transform PlacementOrigin;              // anchor at crucible bottom-center
-        public Vector2 GridSize = new Vector2(4, 3);   // columns (x), rows (y)
+        // (Deprecated) auto-placement fields kept to avoid prefab breakage
+        [Header("Auto Placement (deprecated; kept for prefab compat)")]
+        public Transform PlacementOrigin;
+        public Vector2 GridSize = new Vector2(4, 3);
         public Vector2 CellSpacing = new Vector2(0.2f, 0.2f);
-
-        // ---- UI/Alloying helpers ----
-        [Header("Alloying")]
-        [Tooltip("Step size used by UI balancing and snapping.")]
-        public float UIStepLiters = 0.1f;
-
-        public const float kTargetPourLiters = 1.0f;
-        const float kEpsilon = 0.0005f;
 
         // ----------------
         // Derived helpers
@@ -67,35 +61,17 @@ namespace _Project.Blacksmithing.Foundry
             }
         }
 
-        private Vector3 GetLocalGridPosition(int n)
-        {
-            if (GridSize.x < 1f) GridSize.x = 1f;
-            if (GridSize.y < 1f) GridSize.y = 1f;
-
-            int cols = Mathf.Max(1, Mathf.RoundToInt(GridSize.x));
-            int row = n / cols;
-            int col = n % cols;
-
-            float totalW = (cols - 1) * CellSpacing.x;
-            float x = -totalW * 0.5f + col * CellSpacing.x;
-            float y = row * CellSpacing.y; // upward from bottom
-            return new Vector3(x, y, 0f);
-        }
-
         /// <summary>
         /// Commit an ore the player dropped inside the crucible:
-        /// - Freezes physics
-        /// - Parents under crucible
-        /// - Auto-places at bottom grid
-        /// - Adds a CrucibleEntry (solid; will melt over time)
+        /// - Parents under crucible (keeps world position; no grid).
+        /// - Freezes physics (Kinematic, no gravity).
+        /// - Adds a CrucibleEntry initialized at AmbientTempC.
         /// </summary>
         public bool CommitOreAtAutoPosition(OreMB ore)
         {
             if (ore == null) return false;
             if (ore.AddedToCrucible) return false;
             if (ore.Liters <= 0f) return false;
-
-            // Must be flagged by your trigger forwarder as inside this crucible
             if (!ore.InCrucibleZone || ore.PendingCrucible != this) return false;
 
             // Capacity check
@@ -104,32 +80,29 @@ namespace _Project.Blacksmithing.Foundry
             // Map enum -> Metal
             Metal metal = MetalsUtil.FromId(ore.MetalId);
 
-            // Freeze physics and mark as added
+            // Freeze physics and mark as added (keep current position)
             var rb = ore.GetComponent<Rigidbody2D>();
             if (rb)
             {
-                rb.isKinematic = true;
+                rb.bodyType = RigidbodyType2D.Kinematic;
                 rb.gravityScale = 0f;
                 rb.linearVelocity = Vector2.zero;
                 rb.angularVelocity = 0f;
             }
             ore.AddedToCrucible = true;
 
-            // Parent to crucible
+            // Parent to crucible, keep position
+            Vector3 worldPos = ore.transform.position;
             ore.transform.SetParent(transform, worldPositionStays: true);
-
-            // Placement index = current count (simple fill order)
-            int index = Contents != null ? Contents.Count : 0;
-
-            // Compute world position from local grid
-            Vector3 worldPos = (PlacementOrigin != null)
-                ? PlacementOrigin.TransformPoint(GetLocalGridPosition(index))
-                : transform.TransformPoint(GetLocalGridPosition(index));
-
             ore.transform.position = worldPos;
 
             // Add entry (keeps GameObject for later hiding when melted)
-            Contents.Add(new CrucibleEntry(metal, ore.Liters, ore.gameObject));
+            var entry = new CrucibleEntry(metal, ore.Liters, ore.gameObject);
+            entry.CurrentTempC = AmbientTempC; // start at ambient
+            Contents.Add(entry);
+
+            // Let OreMB know its crucible (useful later for tinting, etc.)
+            ore.CurrentCrucible = this;
 
             if (!IsHeating) IsHeating = true; // passive-start rule
             ore.PendingCrucible = null;
@@ -139,19 +112,21 @@ namespace _Project.Blacksmithing.Foundry
         }
 
         /// <summary>
-        /// Basic API if you ever want to add directly (bypassing the world object).
+        /// Add directly (bypassing a world object).
         /// </summary>
         public bool TryAddOre(Metal metal, float liters)
         {
             if (metal == null || liters <= 0f) return false;
             if (FillLiters + liters > CapacityLiters) return false;
 
-            Contents.Add(new CrucibleEntry(metal, liters));
+            var e = new CrucibleEntry(metal, liters, null);
+            e.CurrentTempC = AmbientTempC;
+            Contents.Add(e);
             if (!IsHeating) IsHeating = true;
             return true;
         }
 
-        // ---- MELTING LOOP ----
+        // ---- HEATING + MELTING LOOP ----
         private void Update()
         {
             if (Contents == null || Contents.Count == 0) return;
@@ -164,15 +139,26 @@ namespace _Project.Blacksmithing.Foundry
                 if (e == null) continue;
                 if (e.IsMelted) continue;
 
-                // Only melt if hot enough (re-check every frame)
-                if (CurrentTempC >= e.Metal.MeltingPointC)
+                // 1) Heat transfer: approach crucible temperature using a per-metal rate
+                //    dT = k * (CrucibleTemp - OreTemp) * dt
+                //    k = HeatRateBase * Metal.HeatSensitivity
+                float k = Mathf.Max(0f, HeatRateBase) * Mathf.Max(0.01f, e.Metal.HeatSensitivity);
+                float delta = CurrentTempC - e.CurrentTempC;
+                e.CurrentTempC += k * delta * dt;
+
+                // Clamp to reasonable range
+                float minClamp = Mathf.Min(AmbientTempC, CurrentTempC);
+                float maxClamp = Mathf.Max(AmbientTempC, CurrentTempC);
+                e.CurrentTempC = Mathf.Clamp(e.CurrentTempC, minClamp, maxClamp);
+
+                // 2) Melt progress only when the ore itself is hot enough
+                if (e.CurrentTempC >= e.Metal.MeltingPointC)
                 {
                     float required = Mathf.Max(0.01f, e.Metal.MeltTimeSeconds * GlobalMeltTimeScale);
                     e.MeltProgressSeconds += dt;
 
                     if (e.MeltProgressSeconds >= required)
                     {
-                        // Mark melted and hide the solid object
                         e.IsMelted = true;
 
                         if (e.Obj != null)
@@ -186,21 +172,13 @@ namespace _Project.Blacksmithing.Foundry
                             var oreMB = e.Obj.GetComponent<OreMB>();
                             if (oreMB) oreMB.enabled = false;
                         }
-
-                        // NOTE: No LiquidChunk; we just keep the entry marked as melted.
-                        // Alloy composition can later be computed from melted entries.
                     }
-                }
-                else
-                {
-                    // Not hot enough → no progress (no cooling rollback here)
                 }
             }
         }
 
-        // ---- Simple data helpers (no visuals) ----
+        // ---- Data helpers ----
 
-        /// <summary> Total liters that have finished melting. </summary>
         public float GetMeltedLiters()
         {
             float sum = 0f;
@@ -210,7 +188,6 @@ namespace _Project.Blacksmithing.Foundry
             return sum;
         }
 
-        /// <summary> Total liters that are still solid. </summary>
         public float GetSolidLiters()
         {
             float sum = 0f;
@@ -220,9 +197,7 @@ namespace _Project.Blacksmithing.Foundry
             return sum;
         }
 
-        /// <summary>
-        /// Returns a Metal->liters map of the melted portion only.
-        /// </summary>
+        /// <summary> Metal->liters map of the melted portion only. </summary>
         public Dictionary<Metal, float> GetMeltedComposition()
         {
             var map = new Dictionary<Metal, float>();
@@ -239,22 +214,13 @@ namespace _Project.Blacksmithing.Foundry
             return map;
         }
 
-        /// <summary>
-        /// Alias for UI: availability map of melted metal liters (per metal).
-        /// </summary>
+        // ---- UI Alloy support (same surface as before) ----
         public Dictionary<Metal, float> GetMeltedAvailability() => GetMeltedComposition();
 
-        // -----------------------------
-        // Alloy UI integration methods
-        // -----------------------------
+        public const float kTargetPourLiters = 1.0f;
+        const float kEpsilon = 0.0005f;
+        [Tooltip("Step size used by UI balancing and snapping.")] public float UIStepLiters = 0.1f;
 
-        /// <summary>
-        /// Balances a requested selection to exactly 1.0 L, respecting availability and step snapping.
-        /// - Clamps to melted availability
-        /// - Snaps to UIStepLiters
-        /// - If underfilled, distributes remaining proportionally to available headroom
-        /// - If overfilled, trims proportionally
-        /// </summary>
         public Dictionary<Metal, float> TryBalanceToOneLiter(Dictionary<Metal, float> request)
         {
             var avail = GetMeltedAvailability();
@@ -263,7 +229,6 @@ namespace _Project.Blacksmithing.Foundry
 
             float step = Mathf.Max(0.0001f, UIStepLiters);
 
-            // 1) Clamp requested to availability and snap
             if (request != null)
             {
                 foreach (var kv in request)
@@ -278,18 +243,16 @@ namespace _Project.Blacksmithing.Foundry
                 }
             }
 
-            // 2) Seed empty selection if nothing requested: take from the largest pools
             float sum = result.Values.Sum();
             if (sum <= 0f)
             {
-                // Greedy fill from largest availability
                 foreach (var kv in avail.OrderByDescending(p => p.Value))
                 {
                     float remain = kTargetPourLiters - sum;
                     if (remain <= kEpsilon) break;
 
                     float add = Mathf.Min(remain, kv.Value);
-                    add = SnapDown(step, add); // avoid overshooting
+                    add = SnapDown(step, add);
                     if (add > 0f)
                     {
                         result[kv.Key] = add;
@@ -299,29 +262,20 @@ namespace _Project.Blacksmithing.Foundry
                 sum = result.Values.Sum();
             }
 
-            // Early exit if already perfect
             sum = Snap(step, sum);
             if (Mathf.Abs(sum - kTargetPourLiters) <= kEpsilon)
                 return NormalizeToStep(result, step);
 
-            // 3) If under target → add proportionally into headroom
             if (sum < kTargetPourLiters - kEpsilon)
             {
                 float remaining = kTargetPourLiters - sum;
-
-                // Headroom per selected metal; if none, consider any available metals
                 var candidateMetals = avail.Keys.ToList();
+                var order = result.Keys.Concat(candidateMetals.Except(result.Keys)).ToList();
 
-                // Prefer already-selected metals first, then others with availability
-                var order = result.Keys
-                    .Concat(candidateMetals.Except(result.Keys))
-                    .ToList();
-
-                int guard = 1000; // avoid infinite loops due to floating error
+                int guard = 1000;
                 while (remaining > kEpsilon && guard-- > 0)
                 {
                     bool progressed = false;
-
                     foreach (var m in order)
                     {
                         avail.TryGetValue(m, out float a);
@@ -338,16 +292,12 @@ namespace _Project.Blacksmithing.Foundry
                             if (remaining <= kEpsilon) break;
                         }
                     }
-
-                    if (!progressed) break; // nowhere to add more
+                    if (!progressed) break;
                 }
             }
-            // 4) If over target → trim proportionally from current selection
             else
             {
                 float excess = sum - kTargetPourLiters;
-
-                // Sort by largest current first for cleaner UX
                 var order = result.OrderByDescending(kv => kv.Value).Select(kv => kv.Key).ToList();
 
                 int guard = 1000;
@@ -376,14 +326,10 @@ namespace _Project.Blacksmithing.Foundry
             return NormalizeToStep(ClampToAvailability(result, avail), UIStepLiters);
         }
 
-        /// <summary>
-        /// Executes a 1.0 L pour if valid. Drains melted entries and returns true if successful.
-        /// </summary>
         public bool PourExactlyOneLiter(Dictionary<Metal, float> selection)
         {
             if (selection == null || selection.Count == 0) return false;
 
-            // 1) Validate sum and availability
             float sum = selection.Values.Sum();
             if (Mathf.Abs(sum - kTargetPourLiters) > kEpsilon) return false;
 
@@ -394,13 +340,12 @@ namespace _Project.Blacksmithing.Foundry
                 if (kv.Value < -kEpsilon || kv.Value > a + kEpsilon) return false;
             }
 
-            // 2) Drain from melted entries by metal (FIFO over entries)
+            // Drain from melted entries by metal (FIFO over entries)
             foreach (var kv in selection)
             {
                 Metal metal = kv.Key;
                 float drainLeft = kv.Value;
 
-                // Iterate over melted entries of this metal
                 for (int i = 0; i < Contents.Count && drainLeft > kEpsilon; i++)
                 {
                     var e = Contents[i];
@@ -413,31 +358,18 @@ namespace _Project.Blacksmithing.Foundry
                     if (e.Liters <= kEpsilon)
                     {
                         e.Liters = 0f;
-                        // If this entry had an Obj (solid), it's already hidden. Safe to remove it.
-                        Contents[i] = null; // mark null; compact later
+                        Contents[i] = null; // mark; compact later
                     }
                 }
-
-                if (drainLeft > kEpsilon)
-                {
-                    // Should not happen due to availability check; abort to be safe.
-                    return false;
-                }
+                if (drainLeft > kEpsilon) return false; // safety
             }
 
-            // 3) Compact nulls out of Contents
             CompactContents();
-
-            // 4) Create Alloy and hand off to inventory pipeline (optional here)
-            // The UI preview already computed; if you need the authoritative object now:
-            // var alloy = AlloyMath.MakeAlloy(selection);
-            // TODO: Inventory.AddIngot(alloy);
-
             return true;
         }
 
         // -----------------------
-        // Trigger helper (optional)
+        // Trigger helpers
         // -----------------------
         private void OnTriggerEnter2D(Collider2D other)
         {
@@ -486,10 +418,8 @@ namespace _Project.Blacksmithing.Foundry
                 if (v > kEpsilon) dst[kv.Key] = v;
             }
 
-            // Best-effort final tweak to hit target exactly: adjust largest value by residual
             float sum = dst.Values.Sum();
             float residual = kTargetPourLiters - sum;
-
             if (Mathf.Abs(residual) <= kEpsilon) return dst;
 
             if (dst.Count > 0)

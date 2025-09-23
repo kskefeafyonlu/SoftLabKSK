@@ -5,19 +5,25 @@ namespace _Project.Blacksmithing.Foundry
     [System.Serializable]
     public class CrucibleEntry
     {
-        public Metal Metal;       // which metal
-        public float Liters;      // solid volume
-        public GameObject Obj;    // the actual world object in the crucible
+        public Metal Metal;
+        public float Liters;
 
-        // Melting state (very basic)
-        public bool IsMelted = false;
-        public float MeltProgressSeconds = 0f; // accumulated only while hot enough
+        // Optional link to the in-world ore object (disabled on melt)
+        public GameObject Obj;
+
+        // Heating + melting state
+        public float CurrentTempC;        // NEW: per-ore temperature (°C)
+        public float MeltProgressSeconds; // counts only while hot enough
+        public bool IsMelted;
 
         public CrucibleEntry(Metal metal, float liters, GameObject obj = null)
         {
             Metal = metal;
             Liters = liters;
             Obj = obj;
+            CurrentTempC = 20f;     // will be overwritten by FoundaryMB on commit
+            MeltProgressSeconds = 0f;
+            IsMelted = false;
         }
     }
 }
