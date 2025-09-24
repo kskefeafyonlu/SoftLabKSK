@@ -4,14 +4,17 @@ using UnityEngine.EventSystems;
 namespace _Project.Blacksmithing.Foundry
 {
     /// <summary>
-    /// World ore that the player can drag and drop into a FoundaryMB.
-    /// Position is preserved on commit; FoundaryMB handles per-ore heating & melting.
+    /// Draggable ore. Can be committed to a FoundaryMB and later picked back up.
+    /// When removed, it stores the crucible entry's thermal state and cools toward room temp.
     /// </summary>
     public class OreMB : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
     {
         [Header("Identity")]
         public MetalId MetalId;
         public float Liters = 1f;
+
+        // Bound CrucibleEntry identifier (stable link)
+        [HideInInspector] public string BoundEntryGuid;
 
         [Header("Drag Settings")]
         public Camera DragCamera;
@@ -22,6 +25,19 @@ namespace _Project.Blacksmithing.Foundry
         [HideInInspector] public bool InCrucibleZone = false;
         [HideInInspector] public FoundaryMB PendingCrucible = null;
         [HideInInspector] public FoundaryMB CurrentCrucible = null; // set when committed
+
+        // Saved thermal while outside
+        [Header("Saved Thermal (outside)")]
+        [HideInInspector] public bool HasSavedThermalState = false;
+        [HideInInspector] public float SavedTempC = 20f;
+        [HideInInspector] public float SavedMeltProgressSeconds = 0f;
+        [HideInInspector] public float SavedSolidifyProgressSeconds = 0f;
+
+        [Tooltip("Ambient room temperature when outside any crucible.")]
+        public float AmbientTempCOutside = 20f;
+
+        [Tooltip("Cooling approach rate toward ambient when outside (per second).")]
+        public float CoolingRateBase = 0.15f;
 
         // Internals (2D physics)
         private Rigidbody2D _rb2D;
@@ -46,21 +62,61 @@ namespace _Project.Blacksmithing.Foundry
             if (DragCamera == null)
                 DragCamera = Camera.main;
 
-            // Set visual to metal base color for identity (no heat/tint yet)
             _sr = GetComponent<SpriteRenderer>();
             var metal = MetalsUtil.FromId(MetalId);
             _baseColor = (metal != null) ? metal.BaseColor : Color.white;
             if (_sr != null) _sr.color = _baseColor;
         }
 
-        public Color GetBaseColor() => _baseColor;
+        private void Update()
+        {
+            // If outside a crucible and we have a saved temperature, cool toward ambient
+            if (CurrentCrucible == null && HasSavedThermalState)
+            {
+                float delta = AmbientTempCOutside - SavedTempC;
+                SavedTempC += CoolingRateBase * delta * Time.deltaTime;
+            }
+        }
 
-        // ----------------
-        // Drag interface
-        // ----------------
+        // -------- Thermal state API (used by FoundaryMB) --------
+        public void SaveThermalState(float tempC, float meltProg, float solidifyProg)
+        {
+            HasSavedThermalState = true;
+            SavedTempC = tempC;
+            SavedMeltProgressSeconds = meltProg;
+            SavedSolidifyProgressSeconds = solidifyProg;
+        }
+
+        public bool ConsumeThermalState(out float tempC, out float meltProg, out float solidifyProg)
+        {
+            if (!HasSavedThermalState)
+            {
+                tempC = AmbientTempCOutside;
+                meltProg = 0f;
+                solidifyProg = 0f;
+                return false;
+            }
+
+            tempC = SavedTempC;
+            meltProg = SavedMeltProgressSeconds;
+            solidifyProg = SavedSolidifyProgressSeconds;
+
+            HasSavedThermalState = false;
+            return true;
+        }
+
+        // ---------------- Drag interface ----------------
         public void OnBeginDrag(PointerEventData eventData)
         {
-            if (AddedToCrucible) return;
+            // If currently owned by a crucible, uncommit first (no pickup if already melted)
+            if (AddedToCrucible && CurrentCrucible != null)
+            {
+                if (!CurrentCrucible.TryUncommitOre(this))
+                {
+                    // Failsafe: if for any reason it couldn't uncommit, bail out of drag
+                    return;
+                }
+            }
 
             if (_hadRigidbody2D)
             {
@@ -85,8 +141,6 @@ namespace _Project.Blacksmithing.Foundry
 
         public void OnDrag(PointerEventData eventData)
         {
-            if (AddedToCrucible) return;
-
             Vector3 worldUnderCursor = ScreenToWorld(eventData.position);
             Vector3 target = worldUnderCursor + _grabOffset;
             if (LockZ) target.z = _initialZ;
@@ -95,32 +149,25 @@ namespace _Project.Blacksmithing.Foundry
 
         public void OnEndDrag(PointerEventData eventData)
         {
-            if (AddedToCrucible) return;
-
-            // If released inside a crucible trigger, ask that crucible to take ownership.
+            // If released inside a crucible trigger, attempt commit
             if (InCrucibleZone && PendingCrucible != null)
             {
                 bool ok = PendingCrucible.CommitOreAtAutoPosition(this);
                 if (ok)
                 {
-                    // Crucible took ownership (parented, position preserved).
-                    // FoundaryMB created a CrucibleEntry with CurrentTempC set to Ambient.
                     CurrentCrucible = PendingCrucible;
-                    return; // do not restore physics; we now belong to the crucible
+                    return; // crucible owns us now
                 }
             }
 
-            // Otherwise, restore physics if not committed.
+            // Otherwise, outside → restore free physics (Dynamic)
             if (_hadRigidbody2D)
             {
-                _rb2D.bodyType = _wasBodyType;
-                _rb2D.gravityScale = _wasGravityScale;
+                _rb2D.bodyType = RigidbodyType2D.Dynamic;
+                _rb2D.gravityScale = 0f;
             }
         }
 
-        // ----------------
-        // Helpers
-        // ----------------
         private Vector3 ScreenToWorld(Vector2 screenPos)
         {
             if (DragCamera == null)

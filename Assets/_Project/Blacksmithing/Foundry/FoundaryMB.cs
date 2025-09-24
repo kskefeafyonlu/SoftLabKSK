@@ -13,6 +13,10 @@ namespace _Project.Blacksmithing.Foundry
         // ---- Contents ----
         public List<CrucibleEntry> Contents = new List<CrucibleEntry>();
 
+        // Fast lookups to avoid fragile searches
+        private readonly Dictionary<string, int> _idxByGuid = new Dictionary<string, int>(64);
+        private readonly Dictionary<GameObject, string> _guidByObj = new Dictionary<GameObject, string>(64);
+
         // ---- Temperatures ----
         public int AmbientTempC = 20;
         public int MinTempC = 200;
@@ -41,11 +45,7 @@ namespace _Project.Blacksmithing.Foundry
 
         [Header("Object Handling")]
         public MeltedObjPolicy OnMelt = MeltedObjPolicy.Destroy;
-
-        [Tooltip("Prefab used when re-solidifying a melted entry if the original was destroyed.")]
         public GameObject OrePrefab;
-
-        [Tooltip("Delay before Destroy (one-way melt).")]
         public float DestroyDelay = 0.05f;
 
         // ---- Spawn/placement inside crucible ----
@@ -57,6 +57,16 @@ namespace _Project.Blacksmithing.Foundry
         public float SettleFreezeDelay = 0.25f;
         public float SpawnJitterImpulse = 0.5f;
 
+        // ---- Area binding / exit behavior ----
+        [Header("Area Binding")]
+        [Tooltip("Assign the crucible trigger collider (2D). We auto-uncommit solids that leave this area.")]
+        public Collider2D CrucibleArea;
+        [Tooltip("If true, any solid ore that goes outside CrucibleArea is automatically uncommitted.")]
+        public bool AutoUncommitWhenOutsideArea = true;
+
+        [Header("Pickup/Exit Behavior")]
+        public bool AutoUncommitOnExit = true;
+
         // ---- Loop flags ----
         public bool IsHeating = false;
         public bool IsSmelting = false;
@@ -67,8 +77,12 @@ namespace _Project.Blacksmithing.Foundry
         public Vector2 GridSize = new Vector2(4, 3);
         public Vector2 CellSpacing = new Vector2(0.2f, 0.2f);
 
+        // ---- Debug ----
+        public bool DebugLogs = false;
+        void DLog(string msg) { if (DebugLogs) Debug.Log($"[FoundaryMB] {msg}"); }
+
         // ----------------
-        // Helpers
+        // Derived helpers
         // ----------------
         public float FillLiters
         {
@@ -86,46 +100,78 @@ namespace _Project.Blacksmithing.Foundry
         }
 
         // ----------------
-        // Public: spawn directly inside crucible
+        // Bind helpers
+        // ----------------
+        void RegisterEntry(CrucibleEntry e, int index)
+        {
+            _idxByGuid[e.Guid] = index;
+            if (e.Obj != null)
+                _guidByObj[e.Obj] = e.Guid;
+        }
+
+        void ReindexDictionaries()
+        {
+            _idxByGuid.Clear();
+            _guidByObj.Clear();
+            for (int i = 0; i < Contents.Count; i++)
+            {
+                var e = Contents[i];
+                if (e == null) continue;
+                _idxByGuid[e.Guid] = i;
+                if (e.Obj != null) _guidByObj[e.Obj] = e.Guid;
+            }
+        }
+
+        int FindIndexByGuid(string guid)
+        {
+            if (!string.IsNullOrEmpty(guid) && _idxByGuid.TryGetValue(guid, out var idx))
+            {
+                if (idx >= 0 && idx < Contents.Count && Contents[idx] != null && Contents[idx].Guid == guid)
+                    return idx;
+            }
+            return -1;
+        }
+
+        int FindIndexByObj(GameObject obj)
+        {
+            if (obj != null && _guidByObj.TryGetValue(obj, out var guid))
+                return FindIndexByGuid(guid);
+
+            // Fallback slow search
+            for (int i = 0; i < Contents.Count; i++)
+            {
+                var e = Contents[i];
+                if (e != null && e.Obj == obj) return i;
+            }
+            return -1;
+        }
+
+        // ----------------
+        // Optional: spawn inside crucible
         // ----------------
         public OreMB SpawnOreInCrucible(GameObject orePrefab, MetalId id, float liters)
         {
-            Vector3 pos = transform.position; // fallback
-            if (SpawnArea != null)
-            {
-                if (!TryFindSpawnPoint(out pos))
-                    pos = SpawnArea.bounds.center;
-            }
+            Vector3 pos = transform.position;
+            if (SpawnArea != null && !TryFindSpawnPoint(out pos))
+                pos = SpawnArea.bounds.center;
 
             var ore = OreFactory.CreateOre(orePrefab, id, liters, pos);
             if (ore == null) return null;
 
-            // Flag as in-zone so commit works
             ore.InCrucibleZone = true;
             ore.PendingCrucible = this;
 
-            // Light jitter impulse so physics separates overlapping pieces
             var rb = ore.GetComponent<Rigidbody2D>();
             if (rb) rb.AddForce(Random.insideUnitCircle.normalized * SpawnJitterImpulse, ForceMode2D.Impulse);
 
-            // Commit but keep it Dynamic for a short settle time
             bool ok = CommitOreAtAutoPosition(ore, SettleFreezeDelay);
-            if (!ok)
-            {
-                Destroy(ore.gameObject);
-                return null;
-            }
-
+            if (!ok) { Destroy(ore.gameObject); return null; }
             return ore;
         }
 
         bool TryFindSpawnPoint(out Vector3 pos)
         {
-            if (SpawnArea == null)
-            {
-                pos = transform.position;
-                return true;
-            }
+            if (SpawnArea == null) { pos = transform.position; return true; }
 
             var b = SpawnArea.bounds;
             for (int i = 0; i < SpawnMaxTries; i++)
@@ -137,21 +183,14 @@ namespace _Project.Blacksmithing.Foundry
                     Mathf.Lerp(b.min.y, b.max.y, 0.5f + ry * 0.9f),
                     transform.position.z
                 );
-
-                // simple overlap test
                 var hit = Physics2D.OverlapCircle((Vector2)p, SpawnPadding, OreLayerMask);
-                if (hit == null)
-                {
-                    pos = p;
-                    return true;
-                }
+                if (hit == null) { pos = p; return true; }
             }
-            pos = b.center;
-            return false;
+            pos = b.center; return false;
         }
 
         // ----------------
-        // Commit (overload with settle)
+        // Commit (with optional settle)
         // ----------------
         public bool CommitOreAtAutoPosition(OreMB ore, float settleSeconds)
         {
@@ -172,11 +211,7 @@ namespace _Project.Blacksmithing.Foundry
         IEnumerator FreezeAfterDelay(Rigidbody2D rb, float seconds)
         {
             float t = Mathf.Max(0f, seconds);
-            while (t > 0f)
-            {
-                t -= Time.deltaTime;
-                yield return null;
-            }
+            while (t > 0f) { t -= Time.deltaTime; yield return null; }
             if (rb == null) yield break;
             rb.linearVelocity = Vector2.zero;
             rb.angularVelocity = 0f;
@@ -185,8 +220,8 @@ namespace _Project.Blacksmithing.Foundry
         }
 
         /// <summary>
-        /// Commit an ore: parent, keep position, create entry at ambient temp.
-        /// Freezes physics immediately (Kinematic). Use overload if you want settle time.
+        /// Commit an ore: create entry, bind GUIDs, then parent and freeze.
+        /// Restores saved thermal state if the ore had one (so progress continues).
         /// </summary>
         public bool CommitOreAtAutoPosition(OreMB ore)
         {
@@ -194,9 +229,36 @@ namespace _Project.Blacksmithing.Foundry
             if (ore.AddedToCrucible) return false;
             if (ore.Liters <= 0f) return false;
             if (!ore.InCrucibleZone || ore.PendingCrucible != this) return false;
+            if (CrucibleArea != null && !CrucibleArea.bounds.Contains(ore.transform.position)) return false; // must actually be inside
             if (FillLiters + ore.Liters > CapacityLiters) return false;
 
             var metal = MetalsUtil.FromId(ore.MetalId);
+            if (metal == null) return false;
+
+            var entry = new CrucibleEntry(metal, ore.Liters, ore.gameObject);
+            if (ore.ConsumeThermalState(out float savedT, out float savedMelt, out float savedSolid))
+            {
+                entry.CurrentTempC = savedT;
+                entry.MeltProgressSeconds = savedMelt;
+                entry.SolidifyProgressSeconds = savedSolid;
+            }
+            else
+            {
+                entry.CurrentTempC = AmbientTempC;
+            }
+
+            ore.BoundEntryGuid = entry.Guid;
+            Contents.Add(entry);
+            RegisterEntry(entry, Contents.Count - 1);
+
+            ore.AddedToCrucible = true;
+            ore.CurrentCrucible = this;
+            ore.PendingCrucible = null;
+            ore.InCrucibleZone = false;
+
+            Vector3 worldPos = ore.transform.position;
+            ore.transform.SetParent(transform, worldPositionStays: true);
+            ore.transform.position = worldPos;
 
             var rb = ore.GetComponent<Rigidbody2D>();
             if (rb)
@@ -206,21 +268,9 @@ namespace _Project.Blacksmithing.Foundry
                 rb.linearVelocity = Vector2.zero;
                 rb.angularVelocity = 0f;
             }
-            ore.AddedToCrucible = true;
 
-            Vector3 worldPos = ore.transform.position;
-            ore.transform.SetParent(transform, worldPositionStays: true);
-            ore.transform.position = worldPos;
-
-            var entry = new CrucibleEntry(metal, ore.Liters, ore.gameObject);
-            entry.CurrentTempC = AmbientTempC;
-            Contents.Add(entry);
-
-            ore.CurrentCrucible = this;
             if (!IsHeating) IsHeating = true;
-            ore.PendingCrucible = null;
-            ore.InCrucibleZone = false;
-
+            DLog($"Committed ore -> entry {entry.Guid} ({metal.Name}, {ore.Liters} L)");
             return true;
         }
 
@@ -229,19 +279,89 @@ namespace _Project.Blacksmithing.Foundry
             if (metal == null || liters <= 0f) return false;
             if (FillLiters + liters > CapacityLiters) return false;
 
-            var e = new CrucibleEntry(metal, liters, null);
-            e.CurrentTempC = AmbientTempC;
+            var e = new CrucibleEntry(metal, liters, null) { CurrentTempC = AmbientTempC };
             Contents.Add(e);
+            RegisterEntry(e, Contents.Count - 1);
             if (!IsHeating) IsHeating = true;
             return true;
         }
 
         // ----------------
-        // Heating + Phase loop (with reversible solidify)
+        // UNCOMMIT (pickup)
+        // ----------------
+        public bool TryUncommitOre(OreMB ore)
+        {
+            if (ore == null) return false;
+            if (!ore.AddedToCrucible) return false;
+            if (ore.CurrentCrucible != this) return false;
+
+            int idx = FindIndexByGuid(ore.BoundEntryGuid);
+            if (idx < 0) idx = FindIndexByObj(ore.gameObject);
+            if (idx < 0) return false;
+
+            return AutoUncommitEntry(idx, detachTransform:true);
+        }
+
+        // --- NEW: hard guard — auto uncommit if an entry’s object is outside area
+        bool AutoUncommitIfOutsideArea(int index)
+        {
+            if (!AutoUncommitWhenOutsideArea) return false;
+            if (CrucibleArea == null) return false;
+            if (index < 0 || index >= Contents.Count) return false;
+
+            var e = Contents[index];
+            if (e == null || e.IsMelted) return false; // only solids
+            if (e.Obj == null) return false;
+
+            if (!CrucibleArea.bounds.Contains(e.Obj.transform.position))
+            {
+                DLog($"Entry {e.Guid} is outside area → auto-uncommit.");
+                return AutoUncommitEntry(index, detachTransform:false); // we'll leave parenting as-is to respect user's scene
+            }
+            return false;
+        }
+
+        // Core uncommit logic (used by manual pickup and area-based auto-uncommit)
+        bool AutoUncommitEntry(int index, bool detachTransform)
+        {
+            if (index < 0 || index >= Contents.Count) return false;
+            var e = Contents[index];
+            if (e == null) return false;
+            if (e.IsMelted) return false;
+
+            var ore = (e.Obj != null) ? e.Obj.GetComponent<OreMB>() : null;
+
+            if (ore != null)
+            {
+                // Save thermal back to ore
+                ore.SaveThermalState(e.CurrentTempC, e.MeltProgressSeconds, e.SolidifyProgressSeconds);
+
+                // Clear ore ownership
+                ore.AddedToCrucible = false;
+                ore.CurrentCrucible = null;
+                ore.InCrucibleZone = false;
+                ore.PendingCrucible = null;
+                ore.BoundEntryGuid = null;
+
+                if (detachTransform)
+                    ore.transform.SetParent(null, true);
+            }
+
+            // Remove entry & reindex
+            Contents.RemoveAt(index);
+            ReindexDictionaries();
+
+            return true;
+        }
+
+        // ----------------
+        // Heating + Phase loop
         // ----------------
         private void Update()
         {
-            if (Contents == null || Contents.Count == 0) return;
+            if (Contents == null || Contents.Count == 0)
+                return;
+
             float dt = Time.deltaTime;
 
             for (int i = 0; i < Contents.Count; i++)
@@ -249,7 +369,23 @@ namespace _Project.Blacksmithing.Foundry
                 var e = Contents[i];
                 if (e == null) continue;
 
-                // 1) Heat transfer
+                // If the linked object was destroyed and the entry isn't liquid, drop the entry.
+                if (e.Obj == null && !e.IsMelted)
+                {
+                    DLog($"Entry {e.Guid} removed (Obj null while solid).");
+                    Contents[i] = null;
+                    continue;
+                }
+
+                // NEW: If outside area and still solid → auto-uncommit so it can't keep heating/liquifying
+                if (AutoUncommitIfOutsideArea(i))
+                {
+                    // Entry list changed; adjust index and continue.
+                    i--;
+                    continue;
+                }
+
+                // --- Heat transfer
                 float k = Mathf.Max(0f, HeatRateBase) * Mathf.Max(0.01f, e.Metal.HeatSensitivity);
                 float delta = CurrentTempC - e.CurrentTempC;
                 e.CurrentTempC += k * delta * dt;
@@ -258,7 +394,7 @@ namespace _Project.Blacksmithing.Foundry
                 float maxClamp = Mathf.Max(AmbientTempC, CurrentTempC);
                 e.CurrentTempC = Mathf.Clamp(e.CurrentTempC, minClamp, maxClamp);
 
-                // 2) Phase change with hysteresis
+                // --- Phase change
                 float meltStart     = e.Metal.MeltingPointC + Mathf.Max(0f, MeltHysteresisC);
                 float solidifyStart = e.Metal.MeltingPointC - Mathf.Max(0f, SolidifyHysteresisC);
 
@@ -269,7 +405,6 @@ namespace _Project.Blacksmithing.Foundry
 
                 if (!e.IsMelted)
                 {
-                    // SOLID → LIQUID
                     if (e.CurrentTempC >= meltStart)
                     {
                         e.MeltProgressSeconds += dt;
@@ -280,6 +415,7 @@ namespace _Project.Blacksmithing.Foundry
                             e.IsMelted = true;
                             e.MeltProgressSeconds = 0f;
                             HandleMeltedObject(e);
+                            DLog($"Entry {e.Guid} melted.");
                         }
                     }
                     else
@@ -290,7 +426,6 @@ namespace _Project.Blacksmithing.Foundry
                 }
                 else
                 {
-                    // LIQUID → SOLID (now allowed even if the object was destroyed)
                     if (e.CurrentTempC <= solidifyStart)
                     {
                         e.SolidifyProgressSeconds += dt;
@@ -302,13 +437,11 @@ namespace _Project.Blacksmithing.Foundry
                             e.SolidifyProgressSeconds = 0f;
 
                             if (OnMelt == MeltedObjPolicy.HideDisable)
-                            {
                                 RestoreSolidObject(e);
-                            }
-                            else // Destroy policy: respawn a fresh ore object
-                            {
+                            else
                                 RespawnSolidObject(e);
-                            }
+
+                            DLog($"Entry {e.Guid} solidified.");
                         }
                     }
                     else
@@ -318,8 +451,25 @@ namespace _Project.Blacksmithing.Foundry
                     }
                 }
             }
+
+            CompactNullEntries();
         }
 
+        void CompactNullEntries()
+        {
+            bool changed = false;
+            for (int i = Contents.Count - 1; i >= 0; i--)
+            {
+                if (Contents[i] == null)
+                {
+                    Contents.RemoveAt(i);
+                    changed = true;
+                }
+            }
+            if (changed) ReindexDictionaries();
+        }
+
+        // ---- Melt object handlers ----
         void HandleMeltedObject(CrucibleEntry e)
         {
             if (e.Obj == null) return;
@@ -328,10 +478,12 @@ namespace _Project.Blacksmithing.Foundry
             {
                 var go = e.Obj;
                 e.Obj = null;
+                _guidByObj.Remove(go);
+
                 if (DestroyDelay <= 0f) Destroy(go);
                 else StartCoroutine(DestroyAfter(go, DestroyDelay));
             }
-            else // HideDisable
+            else
             {
                 var rend = e.Obj.GetComponent<Renderer>(); if (rend) rend.enabled = false;
                 var col2d = e.Obj.GetComponent<Collider2D>(); if (col2d) col2d.enabled = false;
@@ -346,11 +498,10 @@ namespace _Project.Blacksmithing.Foundry
 
         void RestoreSolidObject(CrucibleEntry e)
         {
-            if (e.Obj == null) return; // was destroyed: cannot restore
+            if (e.Obj == null) return;
             var rend = e.Obj.GetComponent<Renderer>(); if (rend) rend.enabled = true;
             var col2d = e.Obj.GetComponent<Collider2D>(); if (col2d) col2d.enabled = true;
 
-            // “Chill” it
             var rb = e.Obj.GetComponent<Rigidbody2D>();
             if (rb)
             {
@@ -365,26 +516,26 @@ namespace _Project.Blacksmithing.Foundry
         {
             if (OrePrefab == null)
             {
-                Debug.LogWarning("[FoundaryMB] RespawnSolidObject requested but OrePrefab is not assigned.");
+                Debug.LogWarning("[FoundaryMB] RespawnSolidObject: OrePrefab not assigned.");
                 return;
             }
 
-            // Pick a spawn point
             Vector3 pos;
             if (!TryFindSpawnPoint(out pos))
                 pos = (SpawnArea != null) ? SpawnArea.bounds.center : transform.position;
 
-            // Create a new ore with same metal & liters
             var ore = OreFactory.CreateOre(OrePrefab, ToId(e.Metal), e.Liters, pos);
             if (ore == null) return;
 
-            // mark as in this crucible (skip full commit; we directly attach)
+            ore.BoundEntryGuid = e.Guid;
+            e.Obj = ore.gameObject;
+            _guidByObj[ore.gameObject] = e.Guid;
+
             ore.AddedToCrucible = true;
             ore.InCrucibleZone = false;
             ore.PendingCrucible = null;
             ore.CurrentCrucible = this;
 
-            // parent & freeze
             ore.transform.SetParent(transform, true);
             var rb = ore.GetComponent<Rigidbody2D>();
             if (rb)
@@ -394,12 +545,8 @@ namespace _Project.Blacksmithing.Foundry
                 rb.linearVelocity = Vector2.zero;
                 rb.angularVelocity = 0f;
             }
-
-            // hook it back to the entry
-            e.Obj = ore.gameObject;
         }
 
-        // Helper to map Metal back to MetalId (since your registry is fixed)
         MetalId ToId(Metal m)
         {
             if (m == Metals.Iron) return MetalId.Iron;
@@ -412,9 +559,19 @@ namespace _Project.Blacksmithing.Foundry
         }
 
         // ----------------
-        // Drag/drop triggers
+        // Triggers
         // ----------------
         private void OnTriggerEnter2D(Collider2D other)
+        {
+            var ore = other.GetComponent<OreMB>();
+            if (ore != null && !ore.AddedToCrucible)
+            {
+                ore.InCrucibleZone = true;
+                ore.PendingCrucible = this;
+            }
+        }
+
+        private void OnTriggerStay2D(Collider2D other)
         {
             var ore = other.GetComponent<OreMB>();
             if (ore != null && !ore.AddedToCrucible)
@@ -427,26 +584,33 @@ namespace _Project.Blacksmithing.Foundry
         private void OnTriggerExit2D(Collider2D other)
         {
             var ore = other.GetComponent<OreMB>();
-            if (ore != null && !ore.AddedToCrucible && ore.PendingCrucible == this)
+            if (ore == null) return;
+
+            if (!ore.AddedToCrucible && ore.PendingCrucible == this)
             {
                 ore.InCrucibleZone = false;
                 ore.PendingCrucible = null;
+                return;
+            }
+
+            if (AutoUncommitOnExit && ore.AddedToCrucible && ore.CurrentCrucible == this)
+            {
+                TryUncommitOre(ore); // no-op if melted
             }
         }
 
         // ----------------
-        // Alloy UI API (unchanged)
+        // Alloy helpers (unchanged)
         // ----------------
-        public Dictionary<Metal, float> GetMeltedAvailability() => GetMeltedComposition();
+        public float GetMeltedLiters()
+        {
+            float sum = 0f;
+            if (Contents == null) return sum;
+            foreach (var e in Contents)
+                if (e != null && e.IsMelted) sum += e.Liters;
+            return sum;
+        }
 
-        public const float kTargetPourLiters = 1.0f;
-        const float kEpsilon = 0.0005f;
-        [Tooltip("Step size used by UI balancing and snapping.")] public float UIStepLiters = 0.1f;
-
-        
-        /// <summary>
-        /// Returns a Metal→liters map of the melted portion only.
-        /// </summary>
         public Dictionary<Metal, float> GetMeltedComposition()
         {
             var map = new Dictionary<Metal, float>();
@@ -456,15 +620,17 @@ namespace _Project.Blacksmithing.Foundry
             {
                 if (e == null || !e.IsMelted || e.Metal == null || e.Liters <= 0f)
                     continue;
-
-                if (!map.ContainsKey(e.Metal))
-                    map[e.Metal] = 0f;
-
+                if (!map.ContainsKey(e.Metal)) map[e.Metal] = 0f;
                 map[e.Metal] += e.Liters;
             }
-
             return map;
         }
+
+        public Dictionary<Metal, float> GetMeltedAvailability() => GetMeltedComposition();
+
+        public const float kTargetPourLiters = 1.0f;
+        const float kEpsilon = 0.0005f;
+        [Tooltip("Step size used by UI balancing and snapping.")] public float UIStepLiters = 0.1f;
 
         public Dictionary<Metal, float> TryBalanceToOneLiter(Dictionary<Metal, float> request)
         {
@@ -608,7 +774,7 @@ namespace _Project.Blacksmithing.Foundry
                 if (drainLeft > kEpsilon) return false;
             }
 
-            CompactContents();
+            CompactNullEntries();
             return true;
         }
 
@@ -617,7 +783,6 @@ namespace _Project.Blacksmithing.Foundry
         // ----------------
         float Snap(float step, float v) => (step <= 0f) ? v : Mathf.Round(v / step) * step;
         float SnapDown(float step, float v) => (step <= 0f) ? v : Mathf.Floor(v / step) * step;
-
         Dictionary<Metal, float> ClampToAvailability(Dictionary<Metal, float> src, Dictionary<Metal, float> avail)
         {
             var dst = new Dictionary<Metal, float>();
@@ -629,7 +794,6 @@ namespace _Project.Blacksmithing.Foundry
             }
             return dst;
         }
-
         Dictionary<Metal, float> NormalizeToStep(Dictionary<Metal, float> src, float step)
         {
             var dst = new Dictionary<Metal, float>();
@@ -642,7 +806,6 @@ namespace _Project.Blacksmithing.Foundry
             float sum = dst.Values.Sum();
             float residual = kTargetPourLiters - sum;
             if (Mathf.Abs(residual) <= kEpsilon) return dst;
-
             if (dst.Count > 0)
             {
                 var biggest = dst.OrderByDescending(k => k.Value).First().Key;
@@ -650,19 +813,6 @@ namespace _Project.Blacksmithing.Foundry
                 dst[biggest] = Snap(step, nv);
             }
             return dst;
-        }
-
-        void CompactContents()
-        {
-            if (Contents == null) return;
-            for (int i = Contents.Count - 1; i >= 0; i--)
-            {
-                var e = Contents[i];
-                if (e == null || e.Liters <= kEpsilon)
-                {
-                    Contents.RemoveAt(i);
-                }
-            }
         }
     }
 }
