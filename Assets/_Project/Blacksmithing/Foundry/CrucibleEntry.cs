@@ -12,9 +12,11 @@ namespace _Project.Blacksmithing.Foundry
         public GameObject Obj;
 
         // Heating + melting state
-        public float CurrentTempC;        // NEW: per-ore temperature (°C)
-        public float MeltProgressSeconds; // counts only while hot enough
+        public float CurrentTempC;
+        public float MeltProgressSeconds;
+        public float SolidifyProgressSeconds; // if you also want cooling back to solid
         public bool IsMelted;
+
 
         public CrucibleEntry(Metal metal, float liters, GameObject obj = null)
         {

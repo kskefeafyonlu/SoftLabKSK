@@ -1,4 +1,4 @@
-using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -10,41 +10,65 @@ namespace _Project.Blacksmithing.Foundry
         // ---- Capacity ----
         public int CapacityLiters = 5;
 
-        // ---- Contents (solid items; some will become IsMelted) ----
+        // ---- Contents ----
         public List<CrucibleEntry> Contents = new List<CrucibleEntry>();
 
-        // ---- Furnace Temperature (°C) ----
-        public int AmbientTempC = 20;   // used for new entries
+        // ---- Temperatures ----
+        public int AmbientTempC = 20;
         public int MinTempC = 200;
         public int MaxTempC = 1000;
         public int CurrentTempC = 200;
 
-        // ---- Heating Model ----
-        [Tooltip("Baseline heat transfer factor (per second). Higher heats ores faster.")]
+        // ---- Heating model ----
+        [Tooltip("Baseline heat transfer factor (per second). Higher heats/cools faster.")]
         public float HeatRateBase = 0.25f;
 
-        // ---- Melt Timing Scale ----
-        [Tooltip("Global melt time scale (1=normal).")]
+        // ---- Phase thresholds (hysteresis) ----
+        [Header("Phase Change")]
+        [Tooltip("Extra °C above MeltingPoint needed to melt (prevents flicker).")]
+        public float MeltHysteresisC = 10f;
+        [Tooltip("Extra °C below MeltingPoint needed to solidify.")]
+        public float SolidifyHysteresisC = 10f;
+
+        [Tooltip("Multiply melt/solidify time globally (1 = as defined on Metal).")]
         public float GlobalMeltTimeScale = 1f;
+        [Tooltip("If true, solidifying uses the same time as melting; otherwise scales by SolidifyTimeFactor.")]
+        public bool SolidifyUsesSameTime = true;
+        public float SolidifyTimeFactor = 1.0f;
 
-        // ---- Loop State Flags ----
+        // ---- Object handling for phase change ----
+        public enum MeltedObjPolicy { HideDisable, Destroy }
+
+        [Header("Object Handling")]
+        public MeltedObjPolicy OnMelt = MeltedObjPolicy.Destroy;
+
+        [Tooltip("Prefab used when re-solidifying a melted entry if the original was destroyed.")]
+        public GameObject OrePrefab;
+
+        [Tooltip("Delay before Destroy (one-way melt).")]
+        public float DestroyDelay = 0.05f;
+
+        // ---- Spawn/placement inside crucible ----
+        [Header("Spawn Area (optional)")]
+        public BoxCollider2D SpawnArea;
+        public LayerMask OreLayerMask = ~0;
+        public float SpawnPadding = 0.05f;
+        public int SpawnMaxTries = 20;
+        public float SettleFreezeDelay = 0.25f;
+        public float SpawnJitterImpulse = 0.5f;
+
+        // ---- Loop flags ----
         public bool IsHeating = false;
-        public bool IsSmelting = false; // reserved
+        public bool IsSmelting = false;
 
-        // ---- Stability & Impurities (future) ----
-        public float StabilityMax = 100f;
-        public float Stability = 100f;
-        public float Impurities = 0f;
-        public float ImpuritiesMax = 100f;
-
-        // (Deprecated) auto-placement fields kept to avoid prefab breakage
-        [Header("Auto Placement (deprecated; kept for prefab compat)")]
+        // (Deprecated) auto-placement (kept for prefab compat)
+        [Header("Auto Placement (deprecated)")]
         public Transform PlacementOrigin;
         public Vector2 GridSize = new Vector2(4, 3);
         public Vector2 CellSpacing = new Vector2(0.2f, 0.2f);
 
         // ----------------
-        // Derived helpers
+        // Helpers
         // ----------------
         public float FillLiters
         {
@@ -61,11 +85,108 @@ namespace _Project.Blacksmithing.Foundry
             }
         }
 
+        // ----------------
+        // Public: spawn directly inside crucible
+        // ----------------
+        public OreMB SpawnOreInCrucible(GameObject orePrefab, MetalId id, float liters)
+        {
+            Vector3 pos = transform.position; // fallback
+            if (SpawnArea != null)
+            {
+                if (!TryFindSpawnPoint(out pos))
+                    pos = SpawnArea.bounds.center;
+            }
+
+            var ore = OreFactory.CreateOre(orePrefab, id, liters, pos);
+            if (ore == null) return null;
+
+            // Flag as in-zone so commit works
+            ore.InCrucibleZone = true;
+            ore.PendingCrucible = this;
+
+            // Light jitter impulse so physics separates overlapping pieces
+            var rb = ore.GetComponent<Rigidbody2D>();
+            if (rb) rb.AddForce(Random.insideUnitCircle.normalized * SpawnJitterImpulse, ForceMode2D.Impulse);
+
+            // Commit but keep it Dynamic for a short settle time
+            bool ok = CommitOreAtAutoPosition(ore, SettleFreezeDelay);
+            if (!ok)
+            {
+                Destroy(ore.gameObject);
+                return null;
+            }
+
+            return ore;
+        }
+
+        bool TryFindSpawnPoint(out Vector3 pos)
+        {
+            if (SpawnArea == null)
+            {
+                pos = transform.position;
+                return true;
+            }
+
+            var b = SpawnArea.bounds;
+            for (int i = 0; i < SpawnMaxTries; i++)
+            {
+                float rx = Random.Range(-0.5f, 0.5f);
+                float ry = Random.Range(-0.5f, 0.5f);
+                Vector3 p = new Vector3(
+                    Mathf.Lerp(b.min.x, b.max.x, 0.5f + rx * 0.9f),
+                    Mathf.Lerp(b.min.y, b.max.y, 0.5f + ry * 0.9f),
+                    transform.position.z
+                );
+
+                // simple overlap test
+                var hit = Physics2D.OverlapCircle((Vector2)p, SpawnPadding, OreLayerMask);
+                if (hit == null)
+                {
+                    pos = p;
+                    return true;
+                }
+            }
+            pos = b.center;
+            return false;
+        }
+
+        // ----------------
+        // Commit (overload with settle)
+        // ----------------
+        public bool CommitOreAtAutoPosition(OreMB ore, float settleSeconds)
+        {
+            if (!CommitOreAtAutoPosition(ore)) return false;
+
+            var rb = ore.GetComponent<Rigidbody2D>();
+            if (rb != null)
+            {
+                rb.bodyType = RigidbodyType2D.Dynamic;
+                rb.gravityScale = 0f;
+                rb.linearDamping = 2f;
+                rb.angularDamping = 2f;
+                StartCoroutine(FreezeAfterDelay(rb, settleSeconds));
+            }
+            return true;
+        }
+
+        IEnumerator FreezeAfterDelay(Rigidbody2D rb, float seconds)
+        {
+            float t = Mathf.Max(0f, seconds);
+            while (t > 0f)
+            {
+                t -= Time.deltaTime;
+                yield return null;
+            }
+            if (rb == null) yield break;
+            rb.linearVelocity = Vector2.zero;
+            rb.angularVelocity = 0f;
+            rb.bodyType = RigidbodyType2D.Kinematic;
+            rb.gravityScale = 0f;
+        }
+
         /// <summary>
-        /// Commit an ore the player dropped inside the crucible:
-        /// - Parents under crucible (keeps world position; no grid).
-        /// - Freezes physics (Kinematic, no gravity).
-        /// - Adds a CrucibleEntry initialized at AmbientTempC.
+        /// Commit an ore: parent, keep position, create entry at ambient temp.
+        /// Freezes physics immediately (Kinematic). Use overload if you want settle time.
         /// </summary>
         public bool CommitOreAtAutoPosition(OreMB ore)
         {
@@ -73,14 +194,10 @@ namespace _Project.Blacksmithing.Foundry
             if (ore.AddedToCrucible) return false;
             if (ore.Liters <= 0f) return false;
             if (!ore.InCrucibleZone || ore.PendingCrucible != this) return false;
-
-            // Capacity check
             if (FillLiters + ore.Liters > CapacityLiters) return false;
 
-            // Map enum -> Metal
-            Metal metal = MetalsUtil.FromId(ore.MetalId);
+            var metal = MetalsUtil.FromId(ore.MetalId);
 
-            // Freeze physics and mark as added (keep current position)
             var rb = ore.GetComponent<Rigidbody2D>();
             if (rb)
             {
@@ -91,29 +208,22 @@ namespace _Project.Blacksmithing.Foundry
             }
             ore.AddedToCrucible = true;
 
-            // Parent to crucible, keep position
             Vector3 worldPos = ore.transform.position;
             ore.transform.SetParent(transform, worldPositionStays: true);
             ore.transform.position = worldPos;
 
-            // Add entry (keeps GameObject for later hiding when melted)
             var entry = new CrucibleEntry(metal, ore.Liters, ore.gameObject);
-            entry.CurrentTempC = AmbientTempC; // start at ambient
+            entry.CurrentTempC = AmbientTempC;
             Contents.Add(entry);
 
-            // Let OreMB know its crucible (useful later for tinting, etc.)
             ore.CurrentCrucible = this;
-
-            if (!IsHeating) IsHeating = true; // passive-start rule
+            if (!IsHeating) IsHeating = true;
             ore.PendingCrucible = null;
             ore.InCrucibleZone = false;
 
             return true;
         }
 
-        /// <summary>
-        /// Add directly (bypassing a world object).
-        /// </summary>
         public bool TryAddOre(Metal metal, float liters)
         {
             if (metal == null || liters <= 0f) return false;
@@ -126,78 +236,217 @@ namespace _Project.Blacksmithing.Foundry
             return true;
         }
 
-        // ---- HEATING + MELTING LOOP ----
+        // ----------------
+        // Heating + Phase loop (with reversible solidify)
+        // ----------------
         private void Update()
         {
             if (Contents == null || Contents.Count == 0) return;
-
             float dt = Time.deltaTime;
 
             for (int i = 0; i < Contents.Count; i++)
             {
                 var e = Contents[i];
                 if (e == null) continue;
-                if (e.IsMelted) continue;
 
-                // 1) Heat transfer: approach crucible temperature using a per-metal rate
-                //    dT = k * (CrucibleTemp - OreTemp) * dt
-                //    k = HeatRateBase * Metal.HeatSensitivity
+                // 1) Heat transfer
                 float k = Mathf.Max(0f, HeatRateBase) * Mathf.Max(0.01f, e.Metal.HeatSensitivity);
                 float delta = CurrentTempC - e.CurrentTempC;
                 e.CurrentTempC += k * delta * dt;
 
-                // Clamp to reasonable range
                 float minClamp = Mathf.Min(AmbientTempC, CurrentTempC);
                 float maxClamp = Mathf.Max(AmbientTempC, CurrentTempC);
                 e.CurrentTempC = Mathf.Clamp(e.CurrentTempC, minClamp, maxClamp);
 
-                // 2) Melt progress only when the ore itself is hot enough
-                if (e.CurrentTempC >= e.Metal.MeltingPointC)
+                // 2) Phase change with hysteresis
+                float meltStart     = e.Metal.MeltingPointC + Mathf.Max(0f, MeltHysteresisC);
+                float solidifyStart = e.Metal.MeltingPointC - Mathf.Max(0f, SolidifyHysteresisC);
+
+                float meltRequired = Mathf.Max(0.01f, e.Metal.MeltTimeSeconds * GlobalMeltTimeScale);
+                float solidifyRequired = SolidifyUsesSameTime
+                    ? meltRequired
+                    : Mathf.Max(0.01f, e.Metal.MeltTimeSeconds * SolidifyTimeFactor * GlobalMeltTimeScale);
+
+                if (!e.IsMelted)
                 {
-                    float required = Mathf.Max(0.01f, e.Metal.MeltTimeSeconds * GlobalMeltTimeScale);
-                    e.MeltProgressSeconds += dt;
-
-                    if (e.MeltProgressSeconds >= required)
+                    // SOLID → LIQUID
+                    if (e.CurrentTempC >= meltStart)
                     {
-                        e.IsMelted = true;
+                        e.MeltProgressSeconds += dt;
+                        e.SolidifyProgressSeconds = 0f;
 
-                        if (e.Obj != null)
+                        if (e.MeltProgressSeconds >= meltRequired)
                         {
-                            var rend = e.Obj.GetComponent<Renderer>();
-                            if (rend) rend.enabled = false;
-
-                            var col2d = e.Obj.GetComponent<Collider2D>();
-                            if (col2d) col2d.enabled = false;
-
-                            var oreMB = e.Obj.GetComponent<OreMB>();
-                            if (oreMB) oreMB.enabled = false;
+                            e.IsMelted = true;
+                            e.MeltProgressSeconds = 0f;
+                            HandleMeltedObject(e);
                         }
+                    }
+                    else
+                    {
+                        e.MeltProgressSeconds = Mathf.Max(0f, e.MeltProgressSeconds - dt * 0.2f);
+                        e.SolidifyProgressSeconds = 0f;
+                    }
+                }
+                else
+                {
+                    // LIQUID → SOLID (now allowed even if the object was destroyed)
+                    if (e.CurrentTempC <= solidifyStart)
+                    {
+                        e.SolidifyProgressSeconds += dt;
+                        e.MeltProgressSeconds = 0f;
+
+                        if (e.SolidifyProgressSeconds >= solidifyRequired)
+                        {
+                            e.IsMelted = false;
+                            e.SolidifyProgressSeconds = 0f;
+
+                            if (OnMelt == MeltedObjPolicy.HideDisable)
+                            {
+                                RestoreSolidObject(e);
+                            }
+                            else // Destroy policy: respawn a fresh ore object
+                            {
+                                RespawnSolidObject(e);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        e.SolidifyProgressSeconds = Mathf.Max(0f, e.SolidifyProgressSeconds - dt * 0.2f);
+                        e.MeltProgressSeconds = 0f;
                     }
                 }
             }
         }
 
-        // ---- Data helpers ----
-
-        public float GetMeltedLiters()
+        void HandleMeltedObject(CrucibleEntry e)
         {
-            float sum = 0f;
-            if (Contents == null) return sum;
-            foreach (var e in Contents)
-                if (e != null && e.IsMelted) sum += e.Liters;
-            return sum;
+            if (e.Obj == null) return;
+
+            if (OnMelt == MeltedObjPolicy.Destroy)
+            {
+                var go = e.Obj;
+                e.Obj = null;
+                if (DestroyDelay <= 0f) Destroy(go);
+                else StartCoroutine(DestroyAfter(go, DestroyDelay));
+            }
+            else // HideDisable
+            {
+                var rend = e.Obj.GetComponent<Renderer>(); if (rend) rend.enabled = false;
+                var col2d = e.Obj.GetComponent<Collider2D>(); if (col2d) col2d.enabled = false;
+            }
         }
 
-        public float GetSolidLiters()
+        IEnumerator DestroyAfter(GameObject go, float delay)
         {
-            float sum = 0f;
-            if (Contents == null) return sum;
-            foreach (var e in Contents)
-                if (e != null && !e.IsMelted) sum += e.Liters;
-            return sum;
+            yield return new WaitForSeconds(delay);
+            if (go) Destroy(go);
         }
 
-        /// <summary> Metal->liters map of the melted portion only. </summary>
+        void RestoreSolidObject(CrucibleEntry e)
+        {
+            if (e.Obj == null) return; // was destroyed: cannot restore
+            var rend = e.Obj.GetComponent<Renderer>(); if (rend) rend.enabled = true;
+            var col2d = e.Obj.GetComponent<Collider2D>(); if (col2d) col2d.enabled = true;
+
+            // “Chill” it
+            var rb = e.Obj.GetComponent<Rigidbody2D>();
+            if (rb)
+            {
+                rb.bodyType = RigidbodyType2D.Kinematic;
+                rb.gravityScale = 0f;
+                rb.linearVelocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+            }
+        }
+
+        void RespawnSolidObject(CrucibleEntry e)
+        {
+            if (OrePrefab == null)
+            {
+                Debug.LogWarning("[FoundaryMB] RespawnSolidObject requested but OrePrefab is not assigned.");
+                return;
+            }
+
+            // Pick a spawn point
+            Vector3 pos;
+            if (!TryFindSpawnPoint(out pos))
+                pos = (SpawnArea != null) ? SpawnArea.bounds.center : transform.position;
+
+            // Create a new ore with same metal & liters
+            var ore = OreFactory.CreateOre(OrePrefab, ToId(e.Metal), e.Liters, pos);
+            if (ore == null) return;
+
+            // mark as in this crucible (skip full commit; we directly attach)
+            ore.AddedToCrucible = true;
+            ore.InCrucibleZone = false;
+            ore.PendingCrucible = null;
+            ore.CurrentCrucible = this;
+
+            // parent & freeze
+            ore.transform.SetParent(transform, true);
+            var rb = ore.GetComponent<Rigidbody2D>();
+            if (rb)
+            {
+                rb.bodyType = RigidbodyType2D.Kinematic;
+                rb.gravityScale = 0f;
+                rb.linearVelocity = Vector2.zero;
+                rb.angularVelocity = 0f;
+            }
+
+            // hook it back to the entry
+            e.Obj = ore.gameObject;
+        }
+
+        // Helper to map Metal back to MetalId (since your registry is fixed)
+        MetalId ToId(Metal m)
+        {
+            if (m == Metals.Iron) return MetalId.Iron;
+            if (m == Metals.Copper) return MetalId.Copper;
+            if (m == Metals.Silver) return MetalId.Silver;
+            if (m == Metals.Mithril) return MetalId.Mithril;
+            if (m == Metals.Adamantite) return MetalId.Adamantite;
+            if (m == Metals.Gold) return MetalId.Gold;
+            return MetalId.Iron;
+        }
+
+        // ----------------
+        // Drag/drop triggers
+        // ----------------
+        private void OnTriggerEnter2D(Collider2D other)
+        {
+            var ore = other.GetComponent<OreMB>();
+            if (ore != null && !ore.AddedToCrucible)
+            {
+                ore.InCrucibleZone = true;
+                ore.PendingCrucible = this;
+            }
+        }
+
+        private void OnTriggerExit2D(Collider2D other)
+        {
+            var ore = other.GetComponent<OreMB>();
+            if (ore != null && !ore.AddedToCrucible && ore.PendingCrucible == this)
+            {
+                ore.InCrucibleZone = false;
+                ore.PendingCrucible = null;
+            }
+        }
+
+        // ----------------
+        // Alloy UI API (unchanged)
+        // ----------------
+        public Dictionary<Metal, float> GetMeltedAvailability() => GetMeltedComposition();
+
+        public const float kTargetPourLiters = 1.0f;
+        const float kEpsilon = 0.0005f;
+        [Tooltip("Step size used by UI balancing and snapping.")] public float UIStepLiters = 0.1f;
+
+        
+        /// <summary>
+        /// Returns a Metal→liters map of the melted portion only.
+        /// </summary>
         public Dictionary<Metal, float> GetMeltedComposition()
         {
             var map = new Dictionary<Metal, float>();
@@ -208,18 +457,14 @@ namespace _Project.Blacksmithing.Foundry
                 if (e == null || !e.IsMelted || e.Metal == null || e.Liters <= 0f)
                     continue;
 
-                if (!map.ContainsKey(e.Metal)) map[e.Metal] = 0f;
+                if (!map.ContainsKey(e.Metal))
+                    map[e.Metal] = 0f;
+
                 map[e.Metal] += e.Liters;
             }
+
             return map;
         }
-
-        // ---- UI Alloy support (same surface as before) ----
-        public Dictionary<Metal, float> GetMeltedAvailability() => GetMeltedComposition();
-
-        public const float kTargetPourLiters = 1.0f;
-        const float kEpsilon = 0.0005f;
-        [Tooltip("Step size used by UI balancing and snapping.")] public float UIStepLiters = 0.1f;
 
         public Dictionary<Metal, float> TryBalanceToOneLiter(Dictionary<Metal, float> request)
         {
@@ -340,7 +585,6 @@ namespace _Project.Blacksmithing.Foundry
                 if (kv.Value < -kEpsilon || kv.Value > a + kEpsilon) return false;
             }
 
-            // Drain from melted entries by metal (FIFO over entries)
             foreach (var kv in selection)
             {
                 Metal metal = kv.Key;
@@ -358,42 +602,19 @@ namespace _Project.Blacksmithing.Foundry
                     if (e.Liters <= kEpsilon)
                     {
                         e.Liters = 0f;
-                        Contents[i] = null; // mark; compact later
+                        Contents[i] = null;
                     }
                 }
-                if (drainLeft > kEpsilon) return false; // safety
+                if (drainLeft > kEpsilon) return false;
             }
 
             CompactContents();
             return true;
         }
 
-        // -----------------------
-        // Trigger helpers
-        // -----------------------
-        private void OnTriggerEnter2D(Collider2D other)
-        {
-            var ore = other.GetComponent<OreMB>();
-            if (ore != null && !ore.AddedToCrucible)
-            {
-                ore.InCrucibleZone = true;
-                ore.PendingCrucible = this;
-            }
-        }
-
-        private void OnTriggerExit2D(Collider2D other)
-        {
-            var ore = other.GetComponent<OreMB>();
-            if (ore != null && !ore.AddedToCrucible && ore.PendingCrucible == this)
-            {
-                ore.InCrucibleZone = false;
-                ore.PendingCrucible = null;
-            }
-        }
-
-        // -----------------------
-        // Internal utilities
-        // -----------------------
+        // ----------------
+        // Utils
+        // ----------------
         float Snap(float step, float v) => (step <= 0f) ? v : Mathf.Round(v / step) * step;
         float SnapDown(float step, float v) => (step <= 0f) ? v : Mathf.Floor(v / step) * step;
 
