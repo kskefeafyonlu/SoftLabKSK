@@ -1,10 +1,20 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 namespace _Project.Blacksmithing.Foundry
 {
+    /// <summary>
+    /// Optional sink any component can implement to accept poured ingots into an inventory.
+    /// </summary>
+    public interface IInventorySink
+    {
+        bool TryAcceptIngot(AlloyIngotMB ingot);
+    }
+
     public class FoundaryMB : MonoBehaviour
     {
         // ---- Capacity ----
@@ -76,6 +86,19 @@ namespace _Project.Blacksmithing.Foundry
         public Transform PlacementOrigin;
         public Vector2 GridSize = new Vector2(4, 3);
         public Vector2 CellSpacing = new Vector2(0.2f, 0.2f);
+
+        // ---- NEW: Ingot output & optional inventory handoff ----
+        [Header("Ingot Output")]
+        public Transform IngotSpawnPoint;       // fallback: this.transform.position
+        public GameObject IngotPrefab;          // assignable prefab with SpriteRenderer (+ optional physics)
+
+        [Tooltip("Optional: component that implements IInventorySink; ingots are offered here first.")]
+        public MonoBehaviour InventorySinkRef;  // must implement IInventorySink
+
+        /// <summary>
+        /// Fired after a successful pour and handoff/spawn.
+        /// </summary>
+        public Action<AlloyIngotMB> OnIngotPoured;
 
         // ---- Debug ----
         public bool DebugLogs = false;
@@ -776,6 +799,48 @@ namespace _Project.Blacksmithing.Foundry
 
             CompactNullEntries();
             return true;
+        }
+
+        /// <summary>
+        /// New API: drains exactly 1.0 L using existing logic, computes Alloy, and spawns an ingot.
+        /// If an inventory sink is assigned and accepts the ingot, it will take ownership.
+        /// Returns the created ingot (or null on failure).
+        /// </summary>
+        public AlloyIngotMB PourAndCreateIngot(Dictionary<Metal, float> selection)
+        {
+            if (selection == null || selection.Count == 0) return null;
+
+            // Drain + validate via existing API (non-breaking)
+            if (!PourExactlyOneLiter(selection))
+                return null;
+
+            // Compute alloy from the poured liters (AlloyMath handles normalization)
+            var alloy = AlloyMath.MakeAlloy(selection);
+            if (alloy == null) return null;
+
+            // Spawn position fallback: this.transform
+            Vector3 spawnPos = (IngotSpawnPoint != null) ? IngotSpawnPoint.position : transform.position;
+
+            // Require a prefab to continue
+            if (IngotPrefab == null)
+            {
+                Debug.LogWarning("[FoundaryMB] PourAndCreateIngot: IngotPrefab not assigned. Aborting spawn.");
+                return null;
+            }
+
+            var ingot = AlloyIngotMB.Create(IngotPrefab, null, spawnPos, alloy, liters: 1.0f);
+            if (ingot == null) return null;
+
+            // Offer to inventory sink if present
+            var sink = InventorySinkRef as IInventorySink;
+            if (sink != null)
+            {
+                // Inventory may reparent/disable/destroy; we return the reference either way
+                sink.TryAcceptIngot(ingot);
+            }
+
+            OnIngotPoured?.Invoke(ingot);
+            return ingot;
         }
 
         // ----------------

@@ -134,7 +134,7 @@ namespace _Project.Blacksmithing.Foundry
 
         void OnPour()
         {
-            // Build selection again to be authoritative
+            // Build authoritative selection (snapped to step)
             float step = Mathf.Max(0.0001f, foundry ? foundry.UIStepLiters : 0.1f);
             var selection = new Dictionary<Metal, float>();
             float sum = 0f;
@@ -147,21 +147,24 @@ namespace _Project.Blacksmithing.Foundry
                 sum += v;
             }
 
-            if (Mathf.Abs(sum - TargetLiters) > Epsilon) return;
             if (!foundry) return;
+            if (Mathf.Abs(sum - TargetLiters) > Epsilon) return;
 
-            bool ok = foundry.PourExactlyOneLiter(selection);
-            if (ok)
+            // NEW: pour + create ingot
+            var ingot = foundry.PourAndCreateIngot(selection);
+            if (ingot != null)
             {
+                // (Optional) toast: $"{ingot.AlloyData.Name} (Tier: {ingot.AlloyData.Tier})"
                 Close();
             }
             else
             {
-                // If race condition (availability changed), rebuild UI
+                // Availability changed mid-click? Rebuild UI.
                 BuildRows();
                 UpdateTotalsAndPreview();
             }
         }
+
 
         void OnAutoBalance()
         {

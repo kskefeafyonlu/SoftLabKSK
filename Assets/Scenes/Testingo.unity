@@ -1335,6 +1335,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 906101121}
+  - component: {fileID: 906101122}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -1351,12 +1352,25 @@ Transform:
   m_GameObject: {fileID: 906101120}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 30.78656, y: 9.8989, z: 0}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &906101122
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 906101120}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a80eb5a0aa7f41409f5871c61a26e41e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::_Project.Blacksmithing.Foundry.SimpleInventoryMB
+  Items: []
 --- !u!1 &942283193
 GameObject:
   m_ObjectHideFlags: 0
@@ -2230,6 +2244,37 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1160309877}
   m_CullTransparentMesh: 1
+--- !u!1 &1163674160
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1163674161}
+  m_Layer: 0
+  m_Name: IngotPlacementOrigin
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1163674161
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1163674160}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 1.532, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1437675862}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1316885132
 GameObject:
   m_ObjectHideFlags: 0
@@ -2822,9 +2867,9 @@ Transform:
   - {fileID: 1793433127}
   - {fileID: 1316885133}
   - {fileID: 1564955089}
-  - {fileID: 2001900299}
   - {fileID: 2117026170}
   - {fileID: 780095249}
+  - {fileID: 1163674161}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &1437675863
@@ -2880,9 +2925,12 @@ MonoBehaviour:
   AutoUncommitOnExit: 1
   IsHeating: 0
   IsSmelting: 0
-  PlacementOrigin: {fileID: 2001900299}
+  PlacementOrigin: {fileID: 0}
   GridSize: {x: 2, y: 3}
   CellSpacing: {x: 0.5, y: 0.5}
+  IngotSpawnPoint: {fileID: 1163674161}
+  IngotPrefab: {fileID: 1465912088691947509, guid: a64c3d2d8ced32e41a93d4775b68c8dd, type: 3}
+  InventorySinkRef: {fileID: 906101122}
   DebugLogs: 0
   UIStepLiters: 0.1
 --- !u!114 &1437675865
@@ -4271,37 +4319,6 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1959408523}
   m_CullTransparentMesh: 1
---- !u!1 &2001900298
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 2001900299}
-  m_Layer: 0
-  m_Name: PlacementOrigin
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &2001900299
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 2001900298}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: -0.5, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1437675862}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2006592349
 GameObject:
   m_ObjectHideFlags: 0
