@@ -1,9 +1,11 @@
-// AlloyPopupMB.cs
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+
+// NEW: casting registry/icons (kept SO-free, atlas-backed)
+using _Project.Blacksmithing.Casting;
 
 namespace _Project.Blacksmithing.Foundry
 {
@@ -27,10 +29,22 @@ namespace _Project.Blacksmithing.Foundry
         public TextMeshProUGUI previewTierText;
         public TextMeshProUGUI previewStatsText;
 
-        const float TargetLiters = 1.0f;
-        const float Epsilon = 0.0005f;
+        // NEW: Mold picker UI
+        [Header("Mold Picker (Top Scroll Row)")]
+        [Tooltip("Content transform inside your horizontal ScrollView (Grid/HorizontalLayout ok).")]
+        public Transform moldButtonsParent;
+        [Tooltip("Prefab with Button + Image (icon) + TextMeshProUGUI (label).")]
+        public Button moldButtonPrefab;
 
-        readonly Dictionary<Metal, AlloyRowMB> _rows = new();
+        // Runtime state
+        private readonly Dictionary<Metal, AlloyRowMB> _rows = new();
+        private readonly Dictionary<CastId, Button> _moldButtons = new();
+
+        // Selected mold (default = Ingot to preserve old 1.0 L behavior)
+        private CastId _currentMold = CastId.Ingot;
+
+        // Constants
+        const float Epsilon = 0.0005f;
 
         void Awake()
         {
@@ -46,7 +60,12 @@ namespace _Project.Blacksmithing.Foundry
         {
             if (!foundry) { Hide(); return; }
 
+            // Build mold row (icons + labels)
+            BuildMoldButtons();
+
+            // Build metal rows
             BuildRows();
+
             panelRoot?.SetActive(true);
             UpdateTotalsAndPreview();
         }
@@ -54,6 +73,76 @@ namespace _Project.Blacksmithing.Foundry
         public void Hide() => panelRoot?.SetActive(false);
         void Close() => Hide();
 
+        // -----------------------------
+        // Mold Picker (top scroll row)
+        // -----------------------------
+        void BuildMoldButtons()
+        {
+            if (moldButtonsParent == null || moldButtonPrefab == null)
+                return;
+
+            // Clear old
+            for (int i = moldButtonsParent.childCount - 1; i >= 0; i--)
+                Destroy(moldButtonsParent.GetChild(i).gameObject);
+            _moldButtons.Clear();
+
+            // Build from hardcoded defs
+            foreach (var kv in CastDefs.All)
+            {
+                var id = kv.Key;
+                var def = kv.Value;
+
+                var btn = Instantiate(moldButtonPrefab, moldButtonsParent);
+                btn.name = $"MoldButton_{id}";
+
+                // Icon
+                var img = btn.GetComponentInChildren<Image>();
+                if (img != null) img.sprite = CastIconProvider.Get(id);
+
+                // Label
+                var label = btn.GetComponentInChildren<TextMeshProUGUI>();
+                if (label != null) label.text = def.DisplayName;
+
+                btn.onClick.AddListener(() => OnSelectMold(id));
+
+                _moldButtons[id] = btn;
+            }
+
+            // Ensure a valid default
+            if (!_moldButtons.ContainsKey(_currentMold))
+                _currentMold = CastId.Ingot;
+
+            RefreshMoldSelectionVisuals();
+        }
+
+        void OnSelectMold(CastId id)
+        {
+            _currentMold = id;
+            RefreshMoldSelectionVisuals();
+            UpdateTotalsAndPreview(); // updates target liters + pour button state
+        }
+
+        void RefreshMoldSelectionVisuals()
+        {
+            foreach (var kv in _moldButtons)
+            {
+                bool selected = (kv.Key == _currentMold);
+                var colors = kv.Value.colors;
+                // Subtle highlight: boost selected normal color alpha/brightness a bit
+                colors.normalColor = selected ? new Color(1f, 1f, 1f, 0.95f) : new Color(1f, 1f, 1f, 0.75f);
+                kv.Value.colors = colors;
+            }
+        }
+
+        float GetTargetLitersForCurrentMold()
+        {
+            // Hardcoded registry value per mold (Ingot=1.0, Blade=1.6, etc.)
+            return CastDefs.Get(_currentMold).VolumeL;
+        }
+
+        // -----------------------------
+        // Metal rows (unchanged logic)
+        // -----------------------------
         void BuildRows()
         {
             // Clear
@@ -68,7 +157,7 @@ namespace _Project.Blacksmithing.Foundry
             if (avail == null || avail.Count == 0)
             {
                 // No melted metals → disable pour/auto
-                SetTotals(0f);
+                SetTotals(0f, GetTargetLitersForCurrentMold());
                 if (btnPour) btnPour.interactable = false;
                 if (btnAutoBalance) btnAutoBalance.interactable = false;
                 return;
@@ -92,6 +181,7 @@ namespace _Project.Blacksmithing.Foundry
         void UpdateTotalsAndPreview()
         {
             float step = Mathf.Max(0.0001f, foundry ? foundry.UIStepLiters : 0.1f);
+            float targetLiters = GetTargetLitersForCurrentMold();
 
             // Gather selection
             var selLiters = new Dictionary<Metal, float>();
@@ -105,12 +195,17 @@ namespace _Project.Blacksmithing.Foundry
                 total += v;
             }
 
-            SetTotals(total);
+            SetTotals(total, targetLiters);
 
-            // Enable pour only at exactly 1.0 L
-            if (btnPour) btnPour.interactable = Mathf.Abs(total - TargetLiters) <= Epsilon;
+            // Enable pour only when total == target
+            bool hasExact = Mathf.Abs(total - targetLiters) <= Epsilon;
 
-            // Live preview
+            // TEMP RULE: until non-ingot pouring is implemented, enable Pour only for Ingot mold
+            bool allowPourThisStep = (_currentMold == CastId.Ingot);
+
+            if (btnPour) btnPour.interactable = hasExact && allowPourThisStep;
+
+            // Live preview of resulting alloy (independent of mold)
             if (selLiters.Count > 0)
             {
                 var preview = AlloyMath.MakeAlloy(selLiters);
@@ -127,15 +222,17 @@ namespace _Project.Blacksmithing.Foundry
             }
         }
 
-        void SetTotals(float total)
+        void SetTotals(float total, float target)
         {
-            if (totalLitersText) totalLitersText.text = $"Total: {total:0.0} / {TargetLiters:0.0} L";
+            if (totalLitersText) totalLitersText.text = $"Total: {total:0.0} / {target:0.0} L";
         }
 
         void OnPour()
         {
-            // Build authoritative selection (snapped to step)
+            // Build authoritative selection
             float step = Mathf.Max(0.0001f, foundry ? foundry.UIStepLiters : 0.1f);
+            float target = GetTargetLitersForCurrentMold();
+
             var selection = new Dictionary<Metal, float>();
             float sum = 0f;
 
@@ -148,29 +245,38 @@ namespace _Project.Blacksmithing.Foundry
             }
 
             if (!foundry) return;
-            if (Mathf.Abs(sum - TargetLiters) > Epsilon) return;
+            if (Mathf.Abs(sum - target) > Epsilon) return;
 
-            // NEW: pour + create ingot
+            // TEMP: only Ingot is wired to pour right now (1.0 L path).
+            if (_currentMold != CastId.Ingot)
+            {
+                // Optional: insert your toast here, e.g., "That mold isn't implemented yet."
+                Debug.Log("[AlloyPopup] Non-ingot molds will be enabled in the next step.");
+                return;
+            }
+
+            // Uses the existing ingot pour API (drains exactly 1.0 L internally)
             var ingot = foundry.PourAndCreateIngot(selection);
             if (ingot != null)
             {
-                // (Optional) toast: $"{ingot.AlloyData.Name} (Tier: {ingot.AlloyData.Tier})"
                 Close();
             }
             else
             {
-                // Availability changed mid-click? Rebuild UI.
+                // If availability changed mid-click, rebuild UI
                 BuildRows();
                 UpdateTotalsAndPreview();
             }
         }
-
 
         void OnAutoBalance()
         {
             if (!foundry) return;
 
             float step = Mathf.Max(0.0001f, foundry.UIStepLiters);
+            float target = GetTargetLitersForCurrentMold();
+
+            // Start from the user's current picks
             var request = new Dictionary<Metal, float>();
             foreach (var kv in _rows)
             {
@@ -178,14 +284,26 @@ namespace _Project.Blacksmithing.Foundry
                 if (v > 0f) request[kv.Key] = v;
             }
 
+            // Reuse foundry's stepper to fill to 1.0 L; if target != 1.0, we’ll proportionally adjust below
             var balanced = foundry.TryBalanceToOneLiter(request);
+
+            // If current mold isn't exactly 1.0 L, scale the result to the target volume
+            float sum1 = balanced.Values.Sum();
+            if (sum1 > Epsilon && Mathf.Abs(target - 1.0f) > Epsilon)
+            {
+                float scale = target / sum1;
+                var keys = balanced.Keys.ToList();
+                foreach (var m in keys) balanced[m] = balanced[m] * scale;
+            }
+
+            // Apply to rows with local clamping & snapping
             foreach (var kv in _rows)
             {
                 balanced.TryGetValue(kv.Key, out float v);
-                // Clamp locally to the row’s availability and snap
                 v = Mathf.Min(v, kv.Value.AvailableLiters);
                 kv.Value.SetCurrentLiters(Snap(step, v), invoke:false);
             }
+
             UpdateTotalsAndPreview();
         }
 

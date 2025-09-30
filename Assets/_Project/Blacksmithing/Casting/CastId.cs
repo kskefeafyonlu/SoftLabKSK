@@ -1,7 +1,10 @@
 namespace _Project.Blacksmithing.Casting
 {
-    public class CastId
+    public enum CastId
     {
-        
+        Ingot,
+        BladeMedium,
+        Guard,
+        Pommel
     }
 }
